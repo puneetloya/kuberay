@@ -2,6 +2,7 @@ import os
 
 from typing import Dict, Optional, List
 import logging
+import sys
 
 from fastapi import FastAPI
 from starlette.requests import Request
@@ -21,6 +22,7 @@ from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
 from vllm.entrypoints.openai.serving_engine import LoRAModulePath, PromptAdapterPath
 from vllm.utils import FlexibleArgumentParser
 from vllm.entrypoints.logger import RequestLogger
+import json
 
 logger = logging.getLogger("ray.serve")
 
@@ -131,5 +133,14 @@ def build_app(cli_args: Dict[str, str]) -> serve.Application:
     )
 
 
-model = build_app(
-    {"model": os.environ['MODEL_ID'], "tensor-parallel-size": os.environ['TENSOR_PARALLELISM'], "pipeline-parallel-size": os.environ['PIPELINE_PARALLELISM']})
+try:
+    config_path = os.environ.get('VLLM_CONFIG', '/home/ray/vllm_config.json')
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    model = build_app(config)
+except FileNotFoundError:
+    logger.error(f"Configuration file not found at {config_path}")
+    sys.exit(1)
+except json.JSONDecodeError:
+    logger.error(f"Invalid JSON in configuration file {config_path}")
+    sys.exit(1)
