@@ -1,4 +1,5 @@
 import yaml
+import os
 import logging
 from fastapi import FastAPI
 from starlette.requests import Request
@@ -13,8 +14,11 @@ from vllm.entrypoints.openai.protocol import (
     ErrorResponse,
 )
 from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
+from vllm.entrypoints.openai.serving_models import (BaseModelPath,
+                                                    OpenAIServingModels)
 from vllm.entrypoints.openai.cli_args import make_arg_parser
 from vllm.utils import FlexibleArgumentParser
+#from vllm.entrypoints.logger import RequestLogger
 
 # Helper to parse YAML config into vLLM CLI-style arguments
 def parse_vllm_args(config_path):
@@ -49,13 +53,38 @@ def build_app(config_path="vllm_config.yaml"):
 
         @app.post("/v1/chat/completions")
         async def create_chat_completion(self, request: ChatCompletionRequest, raw_request: Request):
+            if engine_args.served_model_name is not None:
+                served_model_names = engine_args.served_model_name
+            else:
+                served_model_names = [engine_args.model]
+
+            # if engine_args.max_log_len:
+            #     request_logger = RequestLogger(max_log_len=engine_args.max_log_len)
+            # else:
+            #     request_logger = None
+
             if not self.openai_serving_chat:
                 model_config = await self.engine.get_model_config()
-                served_model_names = [engine_args.model]
-                self.openai_serving_chat = OpenAIServingChat(
-                    self.engine, model_config, served_model_names, "assistant"
+                base_model_paths = [
+                    BaseModelPath(name=name, model_path=engine_args.model)
+                    for name in served_model_names
+                ]
+                openai_serving_models = OpenAIServingModels(
+                    engine_client=self.engine,
+                    model_config=model_config,
+                    base_model_paths=base_model_paths,
+                    lora_modules=None,
+                    prompt_adapters=None,
                 )
-
+                self.openai_serving_chat = OpenAIServingChat(
+                    self.engine,
+                    model_config,
+                    openai_serving_models,
+                    "assistant",
+                    request_logger=None,
+                    chat_template=None,
+                    chat_template_content_format="auto",
+                )
             generator = await self.openai_serving_chat.create_chat_completion(request, raw_request)
             if isinstance(generator, ErrorResponse):
                 return JSONResponse(content=generator.model_dump(), status_code=generator.code)
@@ -67,17 +96,6 @@ def build_app(config_path="vllm_config.yaml"):
 
     return VLLMDeployment.bind()
 
-# Entrypoint for Ray Serve
-app = build_app("vllm_config.yaml")
 
-try:
-    config_path = os.environ.get('VLLM_CONFIG', '/home/ray/vllm_config.yaml')
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
-        model = build_app(config)
-except FileNotFoundError:
-    logger.error(f"Configuration file not found at {config_path}")
-    sys.exit(1)
-except json.JSONDecodeError:
-    logger.error(f"Invalid JSON in configuration file {config_path}")
-    sys.exit(1)
+config_path = os.environ.get('VLLM_CONFIG', '/home/ray/vllm_config.yaml')
+model = build_app(config_path)
